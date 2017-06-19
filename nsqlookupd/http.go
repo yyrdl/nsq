@@ -1,5 +1,8 @@
 package nsqlookupd
 
+/*
+ http 接口部分的路由及相应的handler
+*/
 import (
 	"fmt"
 	"net/http"
@@ -100,7 +103,7 @@ func (s *httpServer) doChannels(w http.ResponseWriter, req *http.Request, ps htt
 		"channels": channels,
 	}, nil
 }
-
+//返回指定topic下的channel和活跃的producer
 func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -126,7 +129,7 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 		"producers": producers.PeerInfo(),
 	}, nil
 }
-
+//创建一个topic
 func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -148,7 +151,7 @@ func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps 
 
 	return nil, nil
 }
-
+//删除一个topic
 func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -159,7 +162,7 @@ func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps 
 	if err != nil {
 		return nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-
+    
 	registrations := s.ctx.nsqlookupd.DB.FindRegistrations("channel", topicName, "*")
 	for _, registration := range registrations {
 		s.ctx.nsqlookupd.logf(LOG_INFO, "DB: removing channel(%s) from topic(%s)", registration.SubKey, topicName)
@@ -174,7 +177,7 @@ func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps 
 
 	return nil, nil
 }
-
+// 冻结某一个topic下的某一个producer
 func (s *httpServer) doTombstoneTopicProducer(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -202,7 +205,7 @@ func (s *httpServer) doTombstoneTopicProducer(w http.ResponseWriter, req *http.R
 
 	return nil, nil
 }
-
+// 创建一个channel
 func (s *httpServer) doCreateChannel(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -224,7 +227,7 @@ func (s *httpServer) doCreateChannel(w http.ResponseWriter, req *http.Request, p
 
 	return nil, nil
 }
-
+//删除channel 只需从相应的topic 下删除即可
 func (s *httpServer) doDeleteChannel(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {

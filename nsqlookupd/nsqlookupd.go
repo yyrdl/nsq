@@ -1,5 +1,9 @@
 package nsqlookupd
 
+
+/*
+  nsqlookup的主入口
+*/
 import (
 	"log"
 	"net"

@@ -96,5 +96,34 @@ func writeMessageToBackend(buf *bytes.Buffer, msg *Message, bq BackendQueue) err
 	if err != nil {
 		return err
 	}
-	return bq.Put(buf.Bytes())
+	return bq.Put(buf.Bytes())//传的时候是引用。
+	/*
+	   这里的put是同步的，也必须是同步的，因为传的是引用，而相应的空间会被复用，若没有确定已写入就返回的话，势必造成数据混乱。
+
+	   见： 
+	   https://github.com/nsqio/go-diskqueue/blob/master/diskqueue.go#L141
+	   https://github.com/nsqio/go-diskqueue/blob/master/diskqueue.go#L628
+	*/
 }
+
+/*   
+  writeMessageToBackend 是将消息写入备用队列，在这个项目中对应磁盘
+  该函数会被频繁调用，这里我们关心内存的使用效率问题。
+  buf.Bytes()：
+  func (b *Buffer) Bytes() []byte { return b.buf[b.off:] } //从go源代码中copy过来，见http://docs.studygolang.com/src/bytes/buffer.go?s=1861:1865#L47
+ 
+  这里返回的是一个slice ,b.off的值应该为0 ，在golang里 slice为引用，非copy,下面的代码可以证明：
+    buf := []byte("123456")
+	fmt.Println(buf)
+	buf2 := buf[2:]
+	buf2[1] = 10
+	fmt.Println(buf)
+	fmt.Println(buf2)
+
+  打印：
+  [49 50 51 52 53 54]
+  [49 50 51 10 53 54]
+  [51 10 53 54]	
+
+  可见，对buf2的修改也反应到了buf上，所以应该是引用
+*/

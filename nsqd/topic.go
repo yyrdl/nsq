@@ -15,6 +15,7 @@ import (
 
 type Topic struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
+	// 64位原子变量，放在struct的第一个是考虑到在32位（机器字长）机上的内存对齐问题，可减少内存使用，但若Topic不是频繁生成，这样做是没有必要的
 	messageCount uint64
 
 	sync.RWMutex
@@ -40,6 +41,9 @@ type Topic struct {
 }
 
 // Topic constructor
+/*
+   一个topic的消息优先存在在内存中，对应memoryMsgChan ，当这个chan 饱和之后就会存到磁盘，见Topic.put方法
+*/
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	t := &Topic{
 		name:              topicName,
@@ -52,7 +56,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		deleteCallback:    deleteCallback,
 		idFactory:         NewGUIDFactory(ctx.nsqd.getOpts().ID),
 	}
-
+    // 对于临时性的topic ，backend就给一个空壳，内存里放不下了就直接丢弃，反之存放到磁盘
 	if strings.HasSuffix(topicName, "#ephemeral") {
 		t.ephemeral = true
 		t.backend = newDummyBackendQueue()
@@ -147,7 +151,7 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 	case t.channelUpdateChan <- 1:
 	case <-t.exitChan:
 	}
-
+    // 如果没有channel留下，并且是一个临时topic，则删除自身
 	if numChannels == 0 && t.ephemeral == true {
 		go t.deleter.Do(func() { t.deleteCallback(t) })
 	}
@@ -186,15 +190,17 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 	atomic.AddUint64(&t.messageCount, uint64(len(msgs)))
 	return nil
 }
-
+/*
+ 将消息放入队列,若memoryMsgChan放满，则写入备用队列，在该项目中对应一个磁盘队列
+*/
 func (t *Topic) put(m *Message) error {
 	select {
 	case t.memoryMsgChan <- m:
 	default:
-		b := bufferPoolGet()
-		err := writeMessageToBackend(b, m, t.backend)
-		bufferPoolPut(b)
-		t.ctx.nsqd.SetHealth(err)
+		b := bufferPoolGet() // 从buffer缓存区获得一个buffer
+		err := writeMessageToBackend(b, m, t.backend)// 同步写入磁盘
+		bufferPoolPut(b)// 将buffer返还给缓存区
+		t.ctx.nsqd.SetHealth(err) //报告健康状态
 		if err != nil {
 			t.ctx.nsqd.logf(LOG_ERROR,
 				"TOPIC(%s) ERROR: failed to write message to backend - %s",
@@ -229,7 +235,36 @@ func (t *Topic) messagePump() {
 		memoryMsgChan = t.memoryMsgChan
 		backendChan = t.backend.ReadChan()
 	}
+    /*
+	  大疑问： select 语句，case <-t.channelUpdateChan  存在被短路风险吗?
 
+	  case msg = <-memoryMsgChan 是一个大概率可执行case，select 一次只会选择一个case 进行执行。
+
+	  go 的select 语句官方表述是随机从所有的case中选择一个可执行的case执行，随机的实现方式是在进行case loop 之前
+	  先将打乱原本的case的顺序，之后的case loop 按照新的顺序进行loop ，见：https://github.com/golang/go/blob/master/src/runtime/select.go#L202  selectgo方法，
+	  并不会再重新排序
+
+	  如果 case msg = <-memoryMsgChan 的 顺序在case <-t.channelUpdateChan 之前，那么 case <-t.channelUpdateChan就存在被短路的风险。
+
+      但是：
+
+	  下面的for循环编译之后结构为:(伪汇编代码)
+
+	  addr1: .....
+	  addr2: .....
+	  ............
+	  addrn: goto addr1
+
+	  在addr1 至 addrn 这段代码间嵌入了select 的代码，在select.go中定义的hselect结构体并不会被重新声明，但selectgo 方法会重新执行一次，
+	  这就导致所有的case顺序再次被重排，那么case <-t.channelUpdateChan也许就排在case msg = <-memoryMsgChan之前了。
+      
+	  可能我想多了！！！但哪天，go 编译时优化了for select 这种结构，，说不定就gg了。
+
+      优化思路：
+
+	  channel改动优先于messagePump ,发送msg时，chan实时获取，反正都有一个ｆｏｒ　ｒａｎｇｅ
+
+	*/ 
 	for {
 		select {
 		case msg = <-memoryMsgChan:
@@ -239,7 +274,7 @@ func (t *Topic) messagePump() {
 				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
 				continue
 			}
-		case <-t.channelUpdateChan:
+		case <-t.channelUpdateChan: // channel 列表有更改，需要更新chans
 			chans = chans[:0]
 			t.RLock()
 			for _, c := range t.channelMap {
@@ -266,7 +301,9 @@ func (t *Topic) messagePump() {
 		case <-t.exitChan:
 			goto exit
 		}
-
+        /*
+		  第二个问题:如果没有channel 可用，msg在这里是否就被丢弃了？
+		*/
 		for i, channel := range chans {
 			chanMsg := msg
 			// copy the message because each channel
@@ -289,6 +326,8 @@ func (t *Topic) messagePump() {
 					t.name, msg.ID, channel.name, err)
 			}
 		}
+
+
 	}
 
 exit:

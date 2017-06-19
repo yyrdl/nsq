@@ -1,5 +1,8 @@
 package nsqlookupd
 
+/**
+ 实现一个数据结构，用来存储topic ,channel,client 等组成的拓扑信息。所有的数据都存放在内存之中
+*/
 import (
 	"fmt"
 	"sync"
@@ -7,18 +10,31 @@ import (
 	"time"
 )
 
+/*
+  定义该结构
+*/
 type RegistrationDB struct {
 	sync.RWMutex
 	registrationMap map[Registration]Producers
 }
 
+/*
+ 定义一个注册号 ，注册号为一个抽象的概念
+*/
 type Registration struct {
 	Category string
 	Key      string
 	SubKey   string
 }
+
+/*
+定义注册号的复数形式(数组)，朱主要为了方便使用
+*/
 type Registrations []Registration
 
+/*
+ 端信息，但实际代指什么还要结合其他代码
+*/
 type PeerInfo struct {
 	lastUpdate       int64
 	id               string
@@ -29,24 +45,28 @@ type PeerInfo struct {
 	HTTPPort         int    `json:"http_port"`
 	Version          string `json:"version"`
 }
-
+/*
+ 生产者
+*/
 type Producer struct {
-	peerInfo     *PeerInfo
-	tombstoned   bool
-	tombstonedAt time.Time
+	peerInfo     *PeerInfo // 生产者端信息
+	tombstoned   bool // 是否冻结
+	tombstonedAt time.Time //冻结时间
 }
 
+// 定义生产者的复数形式
 type Producers []*Producer
 
+// 实现生产者的序列化方法
 func (p *Producer) String() string {
 	return fmt.Sprintf("%s [%d, %d]", p.peerInfo.BroadcastAddress, p.peerInfo.TCPPort, p.peerInfo.HTTPPort)
 }
-
+// 实现生产者的冻结接口
 func (p *Producer) Tombstone() {
 	p.tombstoned = true
 	p.tombstonedAt = time.Now()
 }
-
+//检查生产者是否冻结
 func (p *Producer) IsTombstoned(lifetime time.Duration) bool {
 	return p.tombstoned && time.Now().Sub(p.tombstonedAt) < lifetime
 }
@@ -68,6 +88,7 @@ func (r *RegistrationDB) AddRegistration(k Registration) {
 }
 
 // add a producer to a registration
+// 如果本来就存在，就是什么也不做，返回false,否则返回true
 func (r *RegistrationDB) AddProducer(k Registration, p *Producer) bool {
 	r.Lock()
 	defer r.Unlock()
@@ -85,6 +106,7 @@ func (r *RegistrationDB) AddProducer(k Registration, p *Producer) bool {
 }
 
 // remove a producer from a registration
+// 从一个注册号上删除一个producer 
 func (r *RegistrationDB) RemoveProducer(k Registration, id string) (bool, int) {
 	r.Lock()
 	defer r.Unlock()
@@ -96,7 +118,7 @@ func (r *RegistrationDB) RemoveProducer(k Registration, id string) (bool, int) {
 	cleaned := Producers{}
 	for _, producer := range producers {
 		if producer.peerInfo.id != id {
-			cleaned = append(cleaned, producer)
+			cleaned = append(cleaned, producer) //不断的生成新的指针数组，这样的操作真的ok吗？
 		} else {
 			removed = true
 		}
@@ -113,13 +135,15 @@ func (r *RegistrationDB) RemoveRegistration(k Registration) {
 	delete(r.registrationMap, k)
 }
 
+// * 代表可以匹配任意字符串
 func (r *RegistrationDB) needFilter(key string, subkey string) bool {
 	return key == "*" || subkey == "*"
 }
-
+//返回匹配的注册号
 func (r *RegistrationDB) FindRegistrations(category string, key string, subkey string) Registrations {
 	r.RLock()
 	defer r.RUnlock()
+	// 如果没有通配符，那么结果只有一个，查找可以更直接一点 
 	if !r.needFilter(key, subkey) {
 		k := Registration{category, key, subkey}
 		if _, ok := r.registrationMap[k]; ok {
@@ -127,6 +151,7 @@ func (r *RegistrationDB) FindRegistrations(category string, key string, subkey s
 		}
 		return Registrations{}
 	}
+	//如果有通配符，则需要找出所有匹配的注册号
 	results := Registrations{}
 	for k := range r.registrationMap {
 		if !k.IsMatch(category, key, subkey) {
@@ -136,7 +161,7 @@ func (r *RegistrationDB) FindRegistrations(category string, key string, subkey s
 	}
 	return results
 }
-
+//通过注册号查找匹配的Producer
 func (r *RegistrationDB) FindProducers(category string, key string, subkey string) Producers {
 	r.RLock()
 	defer r.RUnlock()
@@ -164,7 +189,7 @@ func (r *RegistrationDB) FindProducers(category string, key string, subkey strin
 	}
 	return results
 }
-
+//查找与某id(PeerInfo.id)绑定的所有注册号
 func (r *RegistrationDB) LookupRegistrations(id string) Registrations {
 	r.RLock()
 	defer r.RUnlock()
@@ -179,7 +204,7 @@ func (r *RegistrationDB) LookupRegistrations(id string) Registrations {
 	}
 	return results
 }
-
+//检查注册号是否匹配
 func (k Registration) IsMatch(category string, key string, subkey string) bool {
 	if category != k.Category {
 		return false
@@ -192,7 +217,7 @@ func (k Registration) IsMatch(category string, key string, subkey string) bool {
 	}
 	return true
 }
-
+// 返回匹配的注册号集合
 func (rr Registrations) Filter(category string, key string, subkey string) Registrations {
 	output := Registrations{}
 	for _, k := range rr {
@@ -202,7 +227,7 @@ func (rr Registrations) Filter(category string, key string, subkey string) Regis
 	}
 	return output
 }
-
+// 返回所有的Key组成的集合（未去重）
 func (rr Registrations) Keys() []string {
 	keys := make([]string, len(rr))
 	for i, k := range rr {
@@ -210,7 +235,7 @@ func (rr Registrations) Keys() []string {
 	}
 	return keys
 }
-
+// 返回所有的subKey组成的集合 (未去重)
 func (rr Registrations) SubKeys() []string {
 	subkeys := make([]string, len(rr))
 	for i, k := range rr {
@@ -218,7 +243,7 @@ func (rr Registrations) SubKeys() []string {
 	}
 	return subkeys
 }
-
+// 返回指定时间返回内的活跃生产者列表
 func (pp Producers) FilterByActive(inactivityTimeout time.Duration, tombstoneLifetime time.Duration) Producers {
 	now := time.Now()
 	results := Producers{}
