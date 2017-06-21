@@ -28,16 +28,16 @@ type identifyDataV2 struct {
 	ShortID string `json:"short_id"` // TODO: deprecated, remove in 1.0
 	LongID  string `json:"long_id"`  // TODO: deprecated, remove in 1.0
 
-	ClientID            string `json:"client_id"`
-	Hostname            string `json:"hostname"`
-	HeartbeatInterval   int    `json:"heartbeat_interval"`
-	OutputBufferSize    int    `json:"output_buffer_size"`
-	OutputBufferTimeout int    `json:"output_buffer_timeout"`
+	ClientID            string `json:"client_id"` //nsqd生成的id
+	Hostname            string `json:"hostname"` //主机名
+	HeartbeatInterval   int    `json:"heartbeat_interval"` //心跳间隔
+	OutputBufferSize    int    `json:"output_buffer_size"` //输出缓存大小
+	OutputBufferTimeout int    `json:"output_buffer_timeout"` 
 	FeatureNegotiation  bool   `json:"feature_negotiation"`
 	TLSv1               bool   `json:"tls_v1"`
-	Deflate             bool   `json:"deflate"`
-	DeflateLevel        int    `json:"deflate_level"`
-	Snappy              bool   `json:"snappy"`
+	Deflate             bool   `json:"deflate"` //是否压缩
+	DeflateLevel        int    `json:"deflate_level"` //压缩等级
+	Snappy              bool   `json:"snappy"`  //是否使用snappy ，snappy是一个压缩和解压缩工具包，效率很好
 	SampleRate          int32  `json:"sample_rate"`
 	UserAgent           string `json:"user_agent"`
 	MsgTimeout          int    `json:"msg_timeout"`
@@ -49,9 +49,11 @@ type identifyEvent struct {
 	SampleRate          int32
 	MsgTimeout          time.Duration
 }
-
+ 
+ 
 type clientV2 struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
+	// 将64位的值声明在前是考虑的内存对齐的问题，在32位机器上可以更节省内存空间
 	ReadyCount    int64
 	InFlightCount int64
 	MessageCount  uint64
@@ -120,7 +122,7 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		ctx: ctx,
 
 		Conn: conn,
-
+        // 拥有指定大小缓存区的Reader,Writer
 		Reader: bufio.NewReaderSize(conn, defaultBufferSize),
 		Writer: bufio.NewWriterSize(conn, defaultBufferSize),
 
@@ -213,7 +215,7 @@ func (c *clientV2) Identify(data identifyDataV2) error {
 
 	return nil
 }
-
+// 获取该client的当前状态
 func (c *clientV2) Stats() ClientStats {
 	c.metaLock.RLock()
 	// TODO: deprecated, remove in 1.0
@@ -267,7 +269,7 @@ func (c *clientV2) Stats() ClientStats {
 type prettyConnectionState struct {
 	tls.ConnectionState
 }
-
+// 如上行英文注释，将数字类型的信息 转成人可读的字符串
 func (p *prettyConnectionState) GetCipherSuite() string {
 	switch p.CipherSuite {
 	case tls.TLS_RSA_WITH_RC4_128_SHA:
@@ -299,7 +301,7 @@ func (p *prettyConnectionState) GetCipherSuite() string {
 	}
 	return fmt.Sprintf("Unknown %d", p.CipherSuite)
 }
-
+//返回证书版本号
 func (p *prettyConnectionState) GetVersion() string {
 	switch p.Version {
 	case tls.VersionSSL30:
@@ -314,7 +316,7 @@ func (p *prettyConnectionState) GetVersion() string {
 		return fmt.Sprintf("Unknown %d", p.Version)
 	}
 }
-
+// 是否准备好处理消息
 func (c *clientV2) IsReadyForMessages() bool {
 	if c.Channel.IsPaused() {
 		return false
@@ -391,7 +393,7 @@ func (c *clientV2) Pause() {
 func (c *clientV2) UnPause() {
 	c.tryUpdateReadyState()
 }
-
+// 设置心跳间隔
 func (c *clientV2) SetHeartbeatInterval(desiredInterval int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -410,7 +412,7 @@ func (c *clientV2) SetHeartbeatInterval(desiredInterval int) error {
 
 	return nil
 }
-
+//设置输出缓存区大小
 func (c *clientV2) SetOutputBufferSize(desiredSize int) error {
 	var size int
 
@@ -429,17 +431,17 @@ func (c *clientV2) SetOutputBufferSize(desiredSize int) error {
 	if size > 0 {
 		c.writeLock.Lock()
 		defer c.writeLock.Unlock()
-		c.OutputBufferSize = size
-		err := c.Writer.Flush()
+		c.OutputBufferSize = size  //更新client对应的值
+		err := c.Writer.Flush() //将当前writer的缓冲区数据写入连接，清空缓冲区
 		if err != nil {
 			return err
 		}
-		c.Writer = bufio.NewWriterSize(c.Conn, size)
+		c.Writer = bufio.NewWriterSize(c.Conn, size) // 生成一个指定缓冲区大小的writer
 	}
 
 	return nil
 }
-
+// 设置输出缓冲区超时时间
 func (c *clientV2) SetOutputBufferTimeout(desiredTimeout int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -466,7 +468,7 @@ func (c *clientV2) SetSampleRate(sampleRate int32) error {
 	atomic.StoreInt32(&c.SampleRate, sampleRate)
 	return nil
 }
-
+// 设置一条消息的超时时间
 func (c *clientV2) SetMsgTimeout(msgTimeout int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()

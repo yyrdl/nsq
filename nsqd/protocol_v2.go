@@ -17,7 +17,13 @@ import (
 	"github.com/nsqio/nsq/internal/protocol"
 	"github.com/nsqio/nsq/internal/version"
 )
+/*
+max_in_flight  表示consumer能处理的最大消息数量
 
+consumer订阅 一个topic ，一个topic可能由多个nsqd提供，consumer与他们都建立连接，consumer分别告诉他们可以接收
+的消息数量（RDY），这些数量之和小于max_in_flight ，然后nsqd推送对应数量的消息
+
+*/
 const maxTimeout = time.Hour
 
 const (
@@ -33,14 +39,17 @@ var okBytes = []byte("OK")
 type protocolV2 struct {
 	ctx *context
 }
-
+/*
+该方法在tcp.go里面用到
+这里具体处理数据
+*/
 func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var err error
 	var line []byte
 	var zeroTime time.Time
 
-	clientID := atomic.AddInt64(&p.ctx.nsqd.clientIDSequence, 1)
-	client := newClientV2(clientID, conn, p.ctx)
+	clientID := atomic.AddInt64(&p.ctx.nsqd.clientIDSequence, 1)// 为这个新的连接生成一个client id
+	client := newClientV2(clientID, conn, p.ctx) //生成一个新的client
 
 	// synchronize the startup of messagePump in order
 	// to guarantee that it gets a chance to initialize
@@ -83,6 +92,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		}
 
 		var response []byte
+		//执行相应的nsq 命令
 		response, err = p.Exec(client, params)
 		if err != nil {
 			ctx := ""
@@ -167,7 +177,26 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 
 	return err
 }
+/*
 
+解释并执行命令：
+
+官方命令集： http://nsq.io/clients/tcp_protocol_spec.html#commands
+
+IDENTIFY ：客户端告知nsqd 自己的一些配置，比如心跳间隔，支不支持压缩等，见：http://nsq.io/clients/building_client_libraries.html#feature_negotiation
+FIN      : 表示一条消息已经处理结束
+RDY      : 更新可推送的消息数量
+REQ      ：重新排队指定消息
+TOUCH    : 重设指定消息的超时时间
+SUB      ：表示订阅某一个TOPIC 或channel
+NOP      : 无操作，客户端发这个命令表示不想再收到nsqd的消息推送
+PUB      : 向一个TOPIC发布消息
+MPUB     ：向一个TOPIC发生多条消息
+DPUB     : 向一个TOPIC 发送一个具有延迟设置的消息，延迟时间应该大于0 小于最大重排超时时间
+CLS      : 清理并关闭连接，nsqd不会再推送消息
+AUTH     ：如果IDENTIFY命令返回JSON中auth_required为true,那么client端必须进行AUTH步骤
+
+*/
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	if bytes.Equal(params[0], []byte("IDENTIFY")) {
 		return p.IDENTIFY(client, params)
@@ -473,7 +502,7 @@ func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 
 	return nil, nil
 }
-
+// 
 func (p *protocolV2) AUTH(client *clientV2, params [][]byte) ([]byte, error) {
 	if atomic.LoadInt32(&client.State) != stateInit {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot AUTH in current state")
@@ -543,7 +572,7 @@ func (p *protocolV2) AUTH(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
 
 }
-
+//检查是否验证
 func (p *protocolV2) CheckAuth(client *clientV2, cmd, topicName, channelName string) error {
 	// if auth is enabled, the client must have authorized already
 	// compare topic/channel against cached authorization data (refetching if expired)
@@ -597,8 +626,9 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	channel := topic.GetChannel(channelName)
+	//将这个client挂到对应的channel上
 	channel.AddClient(client.ID, client)
-
+    //更新这个channel的状态为已订阅  
 	atomic.StoreInt32(&client.State, stateSubscribed)
 	client.Channel = channel
 	// update message pump
@@ -621,9 +651,10 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 	if state != stateSubscribed {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot RDY in current state")
 	}
-
+   
 	count := int64(1)
 	if len(params) > 1 {
+		//从binary里读取数字，官网标明这样直接从binary转是最好的方式，避免了不必要的内存消耗，传统的方法是把bytes变成string在parseInt之类的
 		b10, err := protocol.ByteToBase10(params[1])
 		if err != nil {
 			return nil, protocol.NewFatalClientErr(err, "E_INVALID",
@@ -664,12 +695,12 @@ func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewClientErr(err, "E_FIN_FAILED",
 			fmt.Sprintf("FIN %s failed %s", *id, err.Error()))
 	}
-
+    //在client仅仅是更新下相应的数字
 	client.FinishedMessage()
 
 	return nil, nil
 }
-
+//将指定消息重新放入队尾排队
 func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
 	if state != stateSubscribed && state != stateClosing {
@@ -721,7 +752,7 @@ func (p *protocolV2) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 func (p *protocolV2) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
 }
-
+//producer发布一条消息带nsqd，nsqd将其放入指定的topic里面
 func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 
@@ -882,7 +913,7 @@ func (p *protocolV2) DPUB(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return okBytes, nil
 }
-
+//重设制定message的timeout
 func (p *protocolV2) TOUCH(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
 	if state != stateSubscribed && state != stateClosing {
