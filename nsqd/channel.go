@@ -93,15 +93,18 @@ func NewChannel(topicName string, channelName string, ctx *context,
 			ctx.nsqd.getOpts().E2EProcessingLatencyPercentiles,
 		)
 	}
-
+    //做些初始化工作
 	c.initPQ()
 
+   //如果是临时性channel
 	if strings.HasSuffix(channelName, "#ephemeral") {
 		c.ephemeral = true
+		//对于临时性队列,如果消息在内存放不下，nsqd选择丢弃，所以这里给了一个空的后备队列
 		c.backend = newDummyBackendQueue()
 	} else {
 		// backend names, for uniqueness, automatically include the topic...
 		backendName := getBackendName(topicName, channelName)
+		//如果消息放不下，将会缓存到一个基于磁盘的队列
 		c.backend = newDiskQueue(backendName,
 			ctx.nsqd.getOpts().DataPath,
 			ctx.nsqd.getOpts().MaxBytesPerFile,
@@ -114,6 +117,7 @@ func NewChannel(topicName string, channelName string, ctx *context,
 
 	go c.messagePump()
 
+    //告知nsqd主程序一个新的channel已经被创建
 	c.ctx.nsqd.Notify(c)
 
 	return c
@@ -168,6 +172,7 @@ func (c *Channel) exit(deleted bool) error {
 	}
 
 	// this forceably closes client connections
+	//关掉连接上这个channel的客户端
 	c.RLock()
 	for _, client := range c.clients {
 		client.Close()

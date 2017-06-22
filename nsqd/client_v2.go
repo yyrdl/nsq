@@ -147,7 +147,7 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		// heartbeats are client configurable but default to 30s
 		HeartbeatInterval: ctx.nsqd.getOpts().ClientTimeout / 2,
 	}
-	c.lenSlice = c.lenBuf[:]
+	c.lenSlice = c.lenBuf[:]//lenSlice 是lenBuf的一个引用，用来读取消息体中的size,见nsqd官网中消息格式：http://nsq.io/clients/tcp_protocol_spec.html#data-format
 	return c
 }
 

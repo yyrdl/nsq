@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
-
 	"github.com/nsqio/nsq/internal/protocol"
 	"github.com/nsqio/nsq/internal/version"
 )
@@ -32,9 +31,9 @@ const (
 	frameTypeMessage  int32 = 2
 )
 
-var separatorBytes = []byte(" ")
+var separatorBytes = []byte(" ") //消息体内部间隔符
 var heartbeatBytes = []byte("_heartbeat_")
-var okBytes = []byte("OK")
+var okBytes = []byte("OK") //常用返回消息体
 
 type protocolV2 struct {
 	ctx *context
@@ -85,6 +84,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		if len(line) > 0 && line[len(line)-1] == '\r' {
 			line = line[:len(line)-1]
 		}
+		//这样划分消息体是否合理，若消息体正文部分包含separatorBytes呢 ？
 		params := bytes.Split(line, separatorBytes)
 
 		if p.ctx.nsqd.getOpts().Verbose {
@@ -231,7 +231,9 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	}
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
 }
-
+/*
+  对应connection的主控制流
+*/
 func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	var err error
 	var buf bytes.Buffer
@@ -287,6 +289,11 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			flusherChan = outputBufferTicker.C
 		}
 
+		/*
+		  select 未赋值的chan 不会报错，select会忽略该chan,猜测是https://github.com/golang/go/blob/master/src/runtime/select.go#L311 这行代码提供的功能
+
+		  但select如果没有这个处理，下面的select用法问题就大了
+		*/
 		select {
 		case <-flusherChan:
 			// if this case wins, we're either starved
@@ -300,11 +307,14 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			}
 			flushed = true
 		case <-client.ReadyStateChan:
-		case subChannel = <-subEventChan:
+		case subChannel = <-subEventChan://当客户端 发送SUB命令时会指明订阅一个topic和相应的channel，此时subEventChan会收到相应的channel，见protocol_v2的SUB方法
 			// you can't SUB anymore
+            //一个client只能订阅一次，实际是一个connection只能绑定一个channel
 			subEventChan = nil
 		case identifyData := <-identifyEventChan:
 			// you can't IDENTIFY anymore
+			//协商一些配置，只能协商一次，protocol_v2 的INDENTIFY接收到来自connection(client)的INDENTIFY命令，
+			//protocol_v2的INDENTIFY方法调用client的相应方法，在client的相应方法里面往identifyEventChan这个chan推送了数据
 			identifyEventChan = nil
 
 			outputBufferTicker.Stop()
@@ -325,11 +335,19 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 
 			msgTimeout = identifyData.MsgTimeout
 		case <-heartbeatChan:
+		    //心跳
 			err = p.Send(client, frameTypeResponse, heartbeatBytes)
 			if err != nil {
 				goto exit
 			}
 		case msg, ok := <-clientMsgChan:
+		    //这个clientMsgChan来自这个connection对应的channel，channel将producer发布的消息通过这个clientMsgChan 推给client
+			//这个msg可能直接来自内存，也可能来自磁盘缓存，见channel的messagePump方法
+			/*
+			 在nsqd 里面Topic收到的推送消息，下面相应的channel都会收到一份，channel再将其推送给client，但是其中一个,
+			 由channel的代码里可知channel只是将消息交给clientMsgChan,channel不管是哪个client收到消息，在这里具体的client的从clientMsgChan
+			 收到了消息，可见这里的负载均衡由golang的chan提供。（多个client在监听同一个clientMsgChan）
+			*/
 			if !ok {
 				goto exit
 			}
@@ -337,9 +355,10 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
 			}
-
+            //告知channel ,这个msg正在向client.ID对应的client推送，client收到msg之后应该返回一个FIN
 			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)
 			client.SendingMessage()
+			//具体的推送步骤，将消息写入连接，这里用了一个全局的缓存buf
 			err = p.SendMessage(client, msg, &buf)
 			if err != nil {
 				goto exit
@@ -358,7 +377,8 @@ exit:
 		p.ctx.nsqd.logf("PROTOCOL(V2): [%s] messagePump error - %s", client, err)
 	}
 }
-
+//下面的方法是nsqd协议各个命令的具体实现，作为源码阅读主要关注PUB方法,SUB方法里面的处理
+//从运行效率，与TOPIC ,CHANNEL的协作设计来分析
 func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 
@@ -765,7 +785,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
-
+    //获取实际发送的消息的大小（字节）
 	bodyLen, err := readLen(client.Reader, client.lenSlice)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
@@ -989,12 +1009,13 @@ func getMessageID(p []byte) (*MessageID, error) {
 	}
 	return (*MessageID)(unsafe.Pointer(&p[0])), nil
 }
-
+//nsqd的消息体第一个要素是nsqd的命令（FIN,PUB等），这个函数用户读取第二个要素，即消息的大小
 func readLen(r io.Reader, tmp []byte) (int32, error) {
 	_, err := io.ReadFull(r, tmp)
 	if err != nil {
 		return 0, err
 	}
+	//网络字节流是大端对齐，及高字节在低地址，低字节在高地址
 	return int32(binary.BigEndian.Uint32(tmp)), nil
 }
 

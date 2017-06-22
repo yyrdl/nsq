@@ -12,6 +12,7 @@ type Item struct {
 
 // this is a priority queue as implemented by a min heap
 // ie. the 0th element is the *lowest* value
+//优先队列
 type PriorityQueue []*Item
 
 func New(capacity int) PriorityQueue {
@@ -36,7 +37,9 @@ func (pq *PriorityQueue) Push(x interface{}) {
 	n := len(*pq)
 	c := cap(*pq)
 	if n+1 > c {
+		//如果容量不足，则做两倍扩容
 		npq := make(PriorityQueue, n, c*2)
+		//将原来的对列copy过来
 		copy(npq, *pq)
 		*pq = npq
 	}
@@ -50,6 +53,7 @@ func (pq *PriorityQueue) Pop() interface{} {
 	n := len(*pq)
 	c := cap(*pq)
 	if n < (c/2) && c > 25 {
+		//若数据量减少，小于容量的二分之一，则容量减半
 		npq := make(PriorityQueue, n, c/2)
 		copy(npq, *pq)
 		*pq = npq
