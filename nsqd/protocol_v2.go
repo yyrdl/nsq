@@ -344,9 +344,9 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 		    //这个clientMsgChan来自这个connection对应的channel，channel将producer发布的消息通过这个clientMsgChan 推给client
 			//这个msg可能直接来自内存，也可能来自磁盘缓存，见channel的messagePump方法
 			/*
-			 在nsqd 里面Topic收到的推送消息，下面相应的channel都会收到一份，channel再将其推送给client，但是其中一个,
-			 由channel的代码里可知channel只是将消息交给clientMsgChan,channel不管是哪个client收到消息，在这里具体的client的从clientMsgChan
-			 收到了消息，可见这里的负载均衡由golang的chan提供。（多个client在监听同一个clientMsgChan）
+			 在nsqd 里面，Topic会将收到的消息给下面的每个channel一份，channel再将其推送给client中的一个。
+			 由channel的代码里可知channel只是将消息交给clientMsgChan,channel不管是哪个client收到消息。
+			 在这个case里面，具体的client的从clientMsgChan收到了消息，可见channel到client的负载均衡由golang的chan提供。（多个client监听同一个clientMsgChan）
 			*/
 			if !ok {
 				goto exit
